@@ -177,10 +177,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--insize",default=config.insize,type=tuple)
     parser.add_argument("--local_grid_size",default=config.local_grid_size,type=tuple)
-    parser.add_argument("-n", "--testnum", help="the number of test image", type=int, default=1000, dest='test_num')
     parser.add_argument("--val_json",default=config.val_json,type=str)
     parser.add_argument("--image_root",default=config.image_root,type=str)
-    parser.add_argument("--checkpointy",type=str)
+    parser.add_argument("--checkpoint",type=str,default="model/best288.pth")
     args = parser.parse_args()
 
 
@@ -223,55 +222,63 @@ def main():
 
     pose_proposal_net = model.poseprosalnet(KEYPOINT_NAMES,EDGES,args.local_grid_size,args.insize,
                                             args.checkpoint)
+    pose_proposal_net.load_state_dict(torch.load(args.checkpoint))
     pose_proposal_net.eval()
     CUDA = torch.cuda.is_available()
     if CUDA:
         pose_proposal_net.cuda()
     pck_object = [[], [], [], []]
-    for i in range(len(image_paths)):
-        image = Image.open(args.image_root+image_paths[i])
-        oriW,oriH = image.size
 
-        h_pad = int(np.clip(((max(oriH, oriW) - oriH) + 1) // 2, 0, 1e6))  # 填充在两边
-        w_pad = int(np.clip(((max(oriH, oriW) - oriW) + 1) // 2, 0, 1e6))
-        image = Pad((w_pad,h_pad))(image)
+    with torch.no_grad():
+        for i in range(len(image_paths)):
+            image = Image.open(args.image_root+"/"+image_paths[i])
+            oriW,oriH = image.size
 
-        padedWH = max(oriH,oriW)
+            h_pad = int(np.clip(((max(oriH, oriW) - oriH) + 1) // 2, 0, 1e6))  # 填充在两边
+            w_pad = int(np.clip(((max(oriH, oriW) - oriW) + 1) // 2, 0, 1e6))
+            image = Pad((w_pad,h_pad),(123, 116, 103))(image)
 
-        image = Resize(args.insize)(image)
-        image = ToTensor()(image)
-        image = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(image)
-        image = image.unsqueeze(0)
-        pre = pose_proposal_net(image)
+            padedWH = max(oriH,oriW)
 
-
-
-        ####################pad#######################
-        paded_keypoints = [
-            pad_keypoint(points, h_pad, w_pad)
-            for points in keypoints[i]
-        ]
-
-        paded_bbox = []
-        for x, y, bw, bh in bbox[i]:
-            [[y, x]] = pad_keypoint(np.array([[y, x]]), h_pad, w_pad)
-            paded_bbox.append(np.array([x, y, bw, bh]))
-        ###################resize#############################
-        new_keypoints = [
-            resize_point(points, (padedWH, padedWH), args.insize)
-            for points in paded_keypoints
-        ]
-        new_bbox = []
-        for x, y, bw, bh in paded_bbox:
-            [[y, x]] = resize_point(np.array([[y, x]]), (padedWH, padedWH), args.insize)
-            bw *= args.insize[1] / padedWH
-            bh *= args.insize[0] / padedWH
-            new_bbox.append(np.array([x, y, bw, bh], dtype='float32'))
+            image = Resize(args.insize)(image)
+            image = ToTensor()(image)
+            image = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(image)
+            image = image.unsqueeze(0)
+            if CUDA:
+                image = image.cuda()
+            pre = pose_proposal_net(image)
 
 
-        humans = utils.get_humans_by_feature(pre, args.insize, pose_proposal_net.outsize, args.local_grid_size, )
-        pck_object[0].append(new_keypoints)
-        pck_object[1].append(humans)
-        pck_object[2].append(new_bbox)
-        pck_object[3].append(is_visible[i])
-    evaluation(pck_object)
+
+            ####################pad#######################
+            paded_keypoints = [
+                pad_keypoint(points, h_pad, w_pad)
+                for points in keypoints[i]
+            ]
+
+            paded_bbox = []
+            for x, y, bw, bh in bbox[i]:
+                [[y, x]] = pad_keypoint(np.array([[y, x]]), h_pad, w_pad)
+                paded_bbox.append(np.array([x, y, bw, bh]))
+            ###################resize#############################
+            new_keypoints = [
+                resize_point(points, (padedWH, padedWH), args.insize)
+                for points in paded_keypoints
+            ]
+            new_bbox = []
+            for x, y, bw, bh in paded_bbox:
+                [[y, x]] = resize_point(np.array([[y, x]]), (padedWH, padedWH), args.insize)
+                bw *= args.insize[1] / padedWH
+                bh *= args.insize[0] / padedWH
+                new_bbox.append(np.array([x, y, bw, bh], dtype='float32'))
+
+
+            humans = utils.get_humans_by_feature(pre, args.insize, pose_proposal_net.outsize, args.local_grid_size,0.02 )
+            pck_object[0].append(new_keypoints)
+            pck_object[1].append(humans)
+            pck_object[2].append(new_bbox)
+            pck_object[3].append(is_visible[i])
+        evaluation(pck_object)
+
+if __name__=="__main__":
+    main()
